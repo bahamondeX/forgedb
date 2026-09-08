@@ -144,8 +144,9 @@ Supported extras: `unique: bool`, `index: bool`, `check: "SQL expression"`.
 | `dict`, `list`, nested `pydantic.BaseModel`, `Any`, `object` | `TEXT` (JSON) |
 
 Dates/times are stored as ISO-8601 strings; enums store their `.value`;
-`Decimal`/`UUID` store their string form. In both directions values are decoded
-back into the annotated Python type by Pydantic when rows are materialized.
+`Decimal`/`UUID` store their string form. Values are always decoded back into
+the annotated Python type — both when rows are materialized into Pydantic
+models and when read through `Query.values()`.
 
 ## Databases
 
@@ -207,12 +208,17 @@ q.first()                    # Article | None  (LIMIT 1, no error when empty)
 Article.get(id=x)            # Article | None  (shortcut for filter(...).first())
 q.count()                    # int
 q.exists()                   # bool
-q.values("title", "score")   # list[dict] plain rows, no model wrapping
+q.values("title", "score")   # list[dict] rows decoded to their Python types
 ```
 
 `Model.all(...)`, `first(...)`, `count(...)`, `exists(...)`, `get(...)` accept
 the same conditions as `filter`, plus `order_by` / `limit` / `offset` where
 relevant.
+
+`limit` and `offset` must be non-negative integers; a negative value raises
+`ValueError`. `count()` counts the rows matching the filters and ignores any
+`limit`/`offset` on the query. An `offset` without a `limit` is valid and
+renders as `LIMIT -1 OFFSET n`.
 
 ### Ordering
 
@@ -308,6 +314,10 @@ a.title = "changed"
 a.save()                        # INSERT when new, UPDATE by pk when existing
 a.refresh()                     # reload defaults / SQL side-effect columns
 ```
+
+`save()` inserts a fresh row when the primary key is unset or absent from the
+table, otherwise it updates in place. Both paths run the current instance state
+through Pydantic validation before writing.
 
 Writing operations create the model's table on demand.
 

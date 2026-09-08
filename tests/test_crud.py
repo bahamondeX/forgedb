@@ -64,7 +64,7 @@ def test_all_get_first_count_exists(db):
 def test_instance_save_inserts_then_updates(db):
     from tests.models import Document
 
-    doc = Document.model_construct(id="x", title="t0", content="")
+    doc = Document(id="x", title="t0")
     doc.save()
     assert Document.count() == 1
 
@@ -229,3 +229,102 @@ def test_refresh_reloads_sql_defaults(db):
     refreshed = article.refresh()
     assert refreshed is not None
     assert refreshed.title == "fresh"
+
+
+def test_values_returns_decoded_types(db):
+    from datetime import datetime, timezone
+    from decimal import Decimal
+    from uuid import UUID
+
+    from forgedb import Model
+
+    class Typed(Model):
+        id: str
+        flag: bool = True
+        ratio: float = 0.0
+        when: datetime | None = None
+        amount: Decimal = Decimal(0)
+        uid: UUID | None = None
+
+    Typed.bind(db)
+    Typed.create(
+        id="1",
+        flag=True,
+        ratio=3.14,
+        when=datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc),
+        amount=Decimal("12.34"),
+        uid=UUID("12345678-1234-5678-1234-567812345678"),
+    )
+    row = Typed.filter(id="1").values("flag", "ratio", "when", "amount", "uid")[0]
+    assert row["flag"] is True
+    assert isinstance(row["flag"], bool)
+    assert row["ratio"] == 3.14
+    assert row["when"] == datetime(2024, 6, 15, 10, 30, 0, tzinfo=timezone.utc)
+    assert row["amount"] == Decimal("12.34")
+    assert row["uid"] == UUID("12345678-1234-5678-1234-567812345678")
+
+
+def test_values_decode_none_field(db):
+    from tests.models import Article
+
+    Article.create(title="nullable", author=None)
+    rows = Article.filter(title="nullable").values("author")
+    assert rows[0]["author"] is None
+
+
+def test_autoincrement_creates_sequential_ids(db):
+    from tests.models import Article
+
+    a1 = Article.create(title="first")
+    a2 = Article.create(title="second")
+    a3 = Article.create(title="third")
+    assert a1.id == 1
+    assert a2.id == 2
+    assert a3.id == 3
+
+
+def test_explicit_pk_overrides_autoincrement(db):
+    from tests.models import Article
+
+    a = Article.create(id=100, title="manual")
+    assert a.id == 100
+    a2 = Article.create(title="auto")
+    assert a2.id == 101
+
+
+def test_autoincrement_does_not_reuse_deleted_ids(db):
+    from tests.models import Article
+
+    first = Article.create(title="one")
+    Article.delete(first.id)
+    second = Article.create(title="two")
+    assert second.id > first.id
+
+
+def test_refresh_returns_none_when_deleted(db):
+    from tests.models import Document
+
+    doc = Document.create(id="x", title="t")
+    Document.delete("x")
+    result = doc.refresh()
+    assert result is None
+
+
+def test_delete_by_filter_returns_count(db):
+    from tests.models import Document
+
+    Document.create(id="1", title="a")
+    Document.create(id="2", title="a")
+    Document.create(id="3", title="b")
+    deleted = Document.delete(title="a")
+    assert deleted == 2
+    assert Document.count() == 1
+
+
+def test_update_no_changes_returns_same_count(db):
+    from tests.models import Document
+
+    Document.create(id="1", title="a")
+    changed = Document.filter(id="1").update(title="a")
+    assert changed == 1
+    assert Document.get(id="1").title == "a"

@@ -1,3 +1,3 @@
 CREATE TABLE IF NOT EXISTS "{{ table }}" (
-{% for col in columns %}    "{{ col.name }}" {{ col.sql_type }}{% if col.pk %} PRIMARY KEY{% endif %}{% if col.unique and not col.pk %} UNIQUE{% endif %}{% if col.not_null and not col.pk %} NOT NULL{% endif %}{% if col.default is not none %} DEFAULT {{ col.default }}{% endif %}{% if col.check %} CHECK ({{ col.check }}){% endif %}{% if not loop.last %},{% endif %}
+{% for col in columns %}    "{{ col.name }}" {{ col.sql_type }}{% if col.pk %} PRIMARY KEY{% endif %}{% if col.autoincrement %} AUTOINCREMENT{% endif %}{% if col.unique and not col.pk %} UNIQUE{% endif %}{% if col.not_null and not col.pk %} NOT NULL{% endif %}{% if col.default is not none %} DEFAULT {{ col.default }}{% endif %}{% if col.check %} CHECK ({{ col.check }}){% endif %}{% if not loop.last %},{% endif %}
 {% endfor %});

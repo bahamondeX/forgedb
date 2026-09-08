@@ -16,7 +16,7 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from .schema import Column
+from .schema import Column, bare_type
 
 
 def json_default(value: Any) -> Any:
@@ -63,6 +63,23 @@ def coerce_to_sql(column: Column, value: Any) -> Any:
 
 
 def decode_from_sql(column: Column, value: Any) -> Any:
+    if value is None:
+        return None
     if column.json:
         return decode_json(value)
+
+    bare = bare_type(column.annotation)
+    if isinstance(bare, type):
+        if issubclass(bare, bool):
+            return bool(value)
+        if issubclass(bare, datetime):
+            return datetime.fromisoformat(value)
+        if issubclass(bare, date):
+            return date.fromisoformat(value)
+        if issubclass(bare, time):
+            return time.fromisoformat(value)
+        if issubclass(bare, UUID):
+            return UUID(value) if isinstance(value, str) else value
+        if issubclass(bare, Decimal):
+            return Decimal(value) if isinstance(value, str) else value
     return value

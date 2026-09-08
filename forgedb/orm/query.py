@@ -117,10 +117,14 @@ class Query:
                 merged.append(key)
         return self._clone(order_by=merged)
 
-    def limit(self, n: int) -> Query:
+    def limit(self, n: int | None) -> Query:
+        if n is not None and n < 0:
+            raise ValueError(f"limit must be non-negative, got {n}")
         return self._clone(limit=n)
 
-    def offset(self, n: int) -> Query:
+    def offset(self, n: int | None) -> Query:
+        if n is not None and n < 0:
+            raise ValueError(f"offset must be non-negative, got {n}")
         return self._clone(offset=n)
 
     def distinct(self) -> Query:

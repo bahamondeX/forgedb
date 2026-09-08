@@ -182,7 +182,8 @@ class Model(BaseModel):
         pk_value = getattr(self, pk, None)
         raw = self.model_dump()
         if pk_value is not None and cls.filter(**{pk: pk_value}).exists():
-            cls.filter(**{pk: pk_value}).update(**{k: v for k, v in raw.items() if k != pk})
+            validated = cls.model_validate(raw)
+            cls.filter(**{pk: pk_value}).update(**{k: v for k, v in validated.model_dump().items() if k != pk})
             return self
         if pk_value is None:
             raw.pop(pk, None)
