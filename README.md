@@ -168,6 +168,11 @@ class Comment(Model):
     author_id: int | None = ForeignKey(User, on_delete="SET NULL", default=None)
 ```
 
+Building the schema rejects an invalid foreign key up front (`SchemaError`): a
+target that isn't a model, an unknown target column, a target column that is
+neither the primary key nor unique, `SET NULL` on a `NOT NULL` column, and an
+unknown `ON DELETE`/`ON UPDATE` action.
+
 Constraints are enforced by SQLite itself: every connection runs
 `PRAGMA foreign_keys = ON` (disable with `Database(..., foreign_keys=False)`), a
 dangling reference raises `sqlite3.IntegrityError`, and referenced tables are
