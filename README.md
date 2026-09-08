@@ -31,8 +31,15 @@ Run the test suite, linter and type checker:
 
 ```bash
 python -m pytest -q
-ruff check forgedb tests
+ruff check .
 mypy
+```
+
+The same three checks run in GitHub Actions (`.github/workflows/ci.yml`) on
+Python 3.10–3.13, and can be reproduced in a container:
+
+```bash
+docker build -t forgedb . && docker run --rm forgedb
 ```
 
 ## Quickstart
