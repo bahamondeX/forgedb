@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Generic, TypeVar
 
 from .conditions import Condition, and_, or_, parse_filters, render
 from .errors import ForgeDBError, UnknownFieldError
@@ -13,6 +13,8 @@ from .values import coerce_to_sql, decode_from_sql
 
 if TYPE_CHECKING:
     from .model import Model
+
+M = TypeVar("M", bound="Model")
 
 _ORDER_DIRS = ("ASC", "DESC")
 
@@ -42,12 +44,15 @@ def _normalize_order(value: Any) -> tuple[str, str]:
     raise ForgeDBError(f"invalid order_by item: {value!r}")
 
 
-class Query:
-    """Chainable query: ``Model.filter(...).or_where(...).order_by(...).first()``."""
+class Query(Generic[M]):
+    """Chainable query: ``Model.filter(...).or_where(...).order_by(...).first()``.
+
+    Generic in the model it queries, so ``Query[Post].all()`` is ``list[Post]``.
+    """
 
     def __init__(
         self,
-        model: type[Model],
+        model: type[M],
         *,
         condition: Condition | None = None,
         order_by: Sequence[Any] = (),
@@ -66,7 +71,7 @@ class Query:
     def _db(self) -> Any:
         return self.model._db()
 
-    def _clone(self, **changes: Any) -> Query:
+    def _clone(self, **changes: Any) -> Query[M]:
         return Query(
             self.model,
             condition=changes.get("condition", self._condition),
@@ -78,14 +83,14 @@ class Query:
 
     # ------------------------------------------------------------- building
 
-    def filter(self, *conditions: Condition | None, **kwargs: Any) -> Query:
+    def filter(self, *conditions: Condition | None, **kwargs: Any) -> Query[M]:
         added = self._make_condition(conditions, kwargs)
         if added is None:
             return self
         combined = and_(self._condition, added) if self._condition is not None else added
         return self._clone(condition=combined)
 
-    def or_where(self, *conditions: Condition | None, **kwargs: Any) -> Query:
+    def or_where(self, *conditions: Condition | None, **kwargs: Any) -> Query[M]:
         added = self._make_condition(conditions, kwargs)
         if added is None:
             return self
@@ -106,7 +111,7 @@ class Query:
             return None
         return and_(*items)
 
-    def order_by(self, *fields: Any) -> Query:
+    def order_by(self, *fields: Any) -> Query[M]:
         normalized = self._order_by + [_normalize_order(f) for f in fields]
         seen: set[tuple[str, str]] = set()
         merged: list[tuple[str, str]] = []
@@ -117,17 +122,17 @@ class Query:
                 merged.append(key)
         return self._clone(order_by=merged)
 
-    def limit(self, n: int | None) -> Query:
+    def limit(self, n: int | None) -> Query[M]:
         if n is not None and n < 0:
             raise ValueError(f"limit must be non-negative, got {n}")
         return self._clone(limit=n)
 
-    def offset(self, n: int | None) -> Query:
+    def offset(self, n: int | None) -> Query[M]:
         if n is not None and n < 0:
             raise ValueError(f"offset must be non-negative, got {n}")
         return self._clone(offset=n)
 
-    def distinct(self) -> Query:
+    def distinct(self) -> Query[M]:
         return self._clone(distinct=True)
 
     # ----------------------------------------------------------- rendering
@@ -175,12 +180,12 @@ class Query:
             for row in rows
         ]
 
-    def all(self) -> list[Model]:
+    def all(self) -> list[M]:
         sql, params = self._select_sql()
         rows = self._db().execute(sql, params).fetchall()
         return [self._to_model(dict(row)) for row in rows]
 
-    def first(self) -> Model | None:
+    def first(self) -> M | None:
         q = self._clone(limit=1)
         rows = q.all()
         return rows[0] if rows else None
@@ -195,11 +200,11 @@ class Query:
         sql = render_sql("exists.sql.j2", table=self._schema.table, where=where)
         return bool(self._db().execute(sql, params).fetchone()[0])
 
-    def _to_model(self, row: dict[str, Any]) -> Model:
+    def _to_model(self, row: dict[str, Any]) -> M:
         decoded = {name: decode_from_sql(self._schema.column(name), value) for name, value in row.items()}
         return self.model.model_validate(decoded)
 
-    def __iter__(self) -> Iterator[Model]:
+    def __iter__(self) -> Iterator[M]:
         return iter(self.all())
 
     # ------------------------------------------------------------ writing

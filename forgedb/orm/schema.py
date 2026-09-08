@@ -1,12 +1,12 @@
 """Pydantic model -> SQLite schema mapping.
 
 The pydantic model is the single source of truth for
-table/column/type/index information. This module is responsible for:
+table/column/type/index/foreign-key information. This module is responsible for:
 
 * deriving the table name from the class name
 * mapping pydantic/python annotations to SQLite storage types
 * deciding nullability, primary keys, defaults, unique/check constraints
-* collecting index definitions
+* collecting index and foreign key definitions
 """
 
 from __future__ import annotations
@@ -19,13 +19,18 @@ from datetime import date, datetime, time
 from decimal import Decimal
 from enum import Enum
 from functools import cache
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Literal, Union, get_args, get_origin
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from pydantic.fields import FieldInfo
+from pydantic_core import PydanticUndefined
 
 from .errors import SchemaError
+
+ReferentialAction = Literal["CASCADE", "SET NULL", "SET DEFAULT", "RESTRICT", "NO ACTION"]
+
+_ACTIONS = frozenset({"CASCADE", "SET NULL", "SET DEFAULT", "RESTRICT", "NO ACTION"})
 
 _MISSING = object()
 
@@ -138,6 +143,61 @@ class Index:
 
 
 @dataclass(frozen=True)
+class ForeignKeySpec:
+    """Declarative foreign key metadata attached to a pydantic field."""
+
+    target: type[BaseModel] | Literal["self"]
+    column: str | None = None
+    on_delete: str | None = None
+    on_update: str | None = None
+
+
+@dataclass(frozen=True)
+class ForeignKeyConstraint:
+    """A resolved foreign key constraint of a table."""
+
+    column: str
+    target: type[Any]
+    target_table: str
+    target_column: str
+    on_delete: str | None = None
+    on_update: str | None = None
+
+
+def ForeignKey(
+    target: type[BaseModel] | Literal["self"],
+    *,
+    column: str | None = None,
+    on_delete: ReferentialAction | None = None,
+    on_update: ReferentialAction | None = None,
+    default: Any = PydanticUndefined,
+    **field_kwargs: Any,
+) -> Any:
+    """Declare a column as a real SQLite foreign key.
+
+    ``author_id: int = ForeignKey(User, on_delete="CASCADE")``
+
+    ``target`` is the referenced model class, or ``"self"`` for a self reference.
+
+    The returned value is a pydantic ``FieldInfo`` carrying the foreign key in
+    its metadata, so the model class stays the single source of truth.
+    """
+    for action in (on_delete, on_update):
+        if action is not None and action.upper() not in _ACTIONS:
+            raise SchemaError(f"invalid referential action {action!r}")
+    field_info = Field(default=default, **field_kwargs)
+    field_info.metadata.append(
+        ForeignKeySpec(
+            target=target,
+            column=column,
+            on_delete=on_delete.upper() if on_delete else None,
+            on_update=on_update.upper() if on_update else None,
+        )
+    )
+    return field_info
+
+
+@dataclass(frozen=True)
 class Column:
     name: str
     sql_type: str
@@ -149,6 +209,7 @@ class Column:
     check: str | None = None
     json: bool = False
     annotation: Any = None
+    foreign_key: ForeignKeyConstraint | None = None
 
 
 @dataclass
@@ -162,6 +223,11 @@ class TableSchema:
     def __post_init__(self) -> None:
         self._column_map = {c.name: c for c in self.columns}
         self.json_columns = frozenset(c.name for c in self.columns if c.json)
+
+    @property
+    def foreign_keys(self) -> tuple[ForeignKeyConstraint, ...]:
+        """Foreign keys of this table, derived from its columns."""
+        return tuple(c.foreign_key for c in self.columns if c.foreign_key is not None)
 
     @property
     def column_map(self) -> dict[str, Column]:
@@ -185,6 +251,49 @@ def _field_extra(field_info: FieldInfo) -> dict[str, Any]:
     return dict(extra) if isinstance(extra, dict) else {}
 
 
+def table_name_for(model: type) -> str:
+    """Table name of a model without building its whole schema."""
+    return getattr(model, "__tablename__", None) or snake_case(model.__name__)
+
+
+def pk_name_for(model: type[BaseModel]) -> str:
+    """Primary key field of a model without building its whole schema.
+
+    Kept separate from :func:`build_schema` so a foreign key may point at a
+    model whose schema is still being built (self references).
+    """
+    pk_marker = getattr(model, "__pk__", _MISSING)
+    pk = ("id" if "id" in model.model_fields else None) if pk_marker is _MISSING else pk_marker
+    if pk is None or pk not in model.model_fields:
+        raise SchemaError(f"{model.__name__} has no primary key to reference")
+    return str(pk)
+
+
+def foreign_key_spec(field_info: FieldInfo) -> ForeignKeySpec | None:
+    for item in field_info.metadata:
+        if isinstance(item, ForeignKeySpec):
+            return item
+    return None
+
+
+def _resolve_foreign_key(name: str, spec: ForeignKeySpec, model: type[BaseModel]) -> ForeignKeyConstraint:
+    model_name = model.__name__
+    target = model if spec.target == "self" else spec.target
+    if not (isinstance(target, type) and issubclass(target, BaseModel)):
+        raise SchemaError(f"foreign key {model_name}.{name} must target a model class, got {target!r}")
+    target_column = spec.column or pk_name_for(target)
+    if target_column not in target.model_fields:
+        raise SchemaError(f"foreign key {model_name}.{name} references unknown column {target_column!r}")
+    return ForeignKeyConstraint(
+        column=name,
+        target=target,
+        target_table=table_name_for(target),
+        target_column=target_column,
+        on_delete=spec.on_delete,
+        on_update=spec.on_update,
+    )
+
+
 def build_schema(model: type[BaseModel]) -> TableSchema:
     """Build a TableSchema from a pydantic model class."""
     fields = model.model_fields
@@ -193,12 +302,13 @@ def build_schema(model: type[BaseModel]) -> TableSchema:
         raise SchemaError(f"{model.__name__} is abstract or defines no fields and cannot be mapped to a table")
 
     pk_marker = getattr(model, "__pk__", _MISSING)
+    pk: str | None
     if pk_marker is _MISSING:
         pk = "id" if "id" in fields else None
     elif pk_marker is None:
         pk = None
     else:
-        pk = pk_marker
+        pk = str(pk_marker)
         if pk not in fields:
             raise SchemaError(f"__pk__={pk!r} is not a field of {model.__name__}")
 
@@ -217,7 +327,9 @@ def build_schema(model: type[BaseModel]) -> TableSchema:
         is_pk = name == pk
         autoincrement = is_pk and col_type == INTEGER
         required = field_info.is_required()
-        not_null = required and not is_pk
+        not_null = required and not is_pk and not is_optional(annotation)
+        spec = foreign_key_spec(field_info)
+        foreign_key = _resolve_foreign_key(name, spec, model) if spec is not None else None
 
         default = None
         if not _is_undefined(field_info.default):
@@ -235,6 +347,7 @@ def build_schema(model: type[BaseModel]) -> TableSchema:
                 check=(extra.get("check") or None),
                 json=json_field,
                 annotation=annotation,
+                foreign_key=foreign_key,
             )
         )
 
@@ -244,7 +357,7 @@ def build_schema(model: type[BaseModel]) -> TableSchema:
         if extra.get("index") and not column.pk:
             single_indexes.append(Index(columns=(column.name,)))
 
-    table = getattr(model, "__tablename__", None) or snake_case(model.__name__)
+    table = table_name_for(model)
     configured = getattr(model, "__indexes__", ())
     indexes: list[Index] = list(single_indexes)
     for entry in configured:
@@ -284,6 +397,4 @@ def _validate_index_columns(pk: str | None, columns: list[Column], index: Index,
 
 
 def _is_undefined(value: Any) -> bool:
-    from pydantic_core import PydanticUndefined
-
     return value is PydanticUndefined

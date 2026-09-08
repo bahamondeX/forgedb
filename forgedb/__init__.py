@@ -11,14 +11,19 @@ from .orm.errors import (
 )
 from .orm.model import Model
 from .orm.query import Query
+from .orm.relations import Relation, relation
+from .orm.schema import ForeignKey, ReferentialAction
 
 __all__ = [
     "Condition",
     "Database",
+    "ForeignKey",
     "ForgeDBError",
     "MissingPrimaryKeyError",
     "Model",
     "Query",
+    "ReferentialAction",
+    "Relation",
     "SchemaError",
     "UnknownFieldError",
     "UnknownOperatorError",
@@ -26,5 +31,6 @@ __all__ = [
     "and_",
     "default_database",
     "or_",
+    "relation",
     "set_default_database",
 ]

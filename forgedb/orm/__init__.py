@@ -11,16 +11,30 @@ from .errors import (
 )
 from .model import Model
 from .query import Query
-from .schema import Index, TableSchema, schema_for
+from .relations import Relation, relation
+from .schema import (
+    ForeignKey,
+    ForeignKeyConstraint,
+    ForeignKeySpec,
+    Index,
+    ReferentialAction,
+    TableSchema,
+    schema_for,
+)
 
 __all__ = [
     "Condition",
     "Database",
+    "ForeignKey",
+    "ForeignKeyConstraint",
+    "ForeignKeySpec",
     "ForgeDBError",
     "Index",
     "MissingPrimaryKeyError",
     "Model",
     "Query",
+    "ReferentialAction",
+    "Relation",
     "SchemaError",
     "TableSchema",
     "UnknownFieldError",
@@ -28,6 +42,7 @@ __all__ = [
     "and_",
     "default_database",
     "or_",
+    "relation",
     "schema_for",
     "set_default_database",
 ]

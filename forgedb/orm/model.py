@@ -7,22 +7,31 @@ Class-level conventions:
 * ``__indexes__``    - list of index definitions
 * ``__abstract__``   - mark intermediate base classes to skip mapping
 * ``Model.bind(db)`` - attach a specific :class:`~forgedb.orm.database.Database`
+
+Query-returning APIs are typed with :data:`typing.Self`, so ``Post.filter().all()``
+is inferred as ``list[Post]`` without any cast.
 """
 
 from __future__ import annotations
 
+import sys
 import uuid
-from typing import Any, ClassVar
+from typing import TYPE_CHECKING, Any, ClassVar
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
+from pydantic._internal._model_construction import ModelMetaclass
 
 from .conditions import Condition
 from .database import Database, default_database
 from .errors import ForgeDBError, MissingPrimaryKeyError
 from .query import Query
+from .relations import Relation
 from .schema import TableSchema, schema_for
 from .templating import render as render_sql
 from .values import coerce_to_sql
+
+if TYPE_CHECKING:
+    from typing import Self
 
 _NOARG = object()
 
@@ -32,17 +41,65 @@ class _SchemaDescriptor:
         return schema_for(owner)
 
 
-class Model(BaseModel):
+def _is_relation_annotation(annotation: Any, module: str | None) -> bool:
+    if isinstance(annotation, type) and issubclass(annotation, Relation):
+        return True
+    if isinstance(annotation, str):
+        head = annotation.split("[", 1)[0].strip()
+        namespace = vars(sys.modules[module]) if module in sys.modules else {}
+        resolved = namespace.get(head.rsplit(".", 1)[-1])
+        if isinstance(resolved, type) and issubclass(resolved, Relation):
+            return True
+        return resolved is None and head.rsplit(".", 1)[-1] == "Relation"
+    origin = getattr(annotation, "__origin__", None)
+    return isinstance(origin, type) and issubclass(origin, Relation)
+
+
+def _defining_namespace() -> dict[str, Any]:
+    """Locals of the frame defining the class, so nested models resolve too."""
+    frame = sys._getframe(2)
+    return dict(frame.f_locals) if frame is not None else {}
+
+
+class ModelMeta(ModelMetaclass):
+    """Keeps ``Relation`` annotations out of the pydantic field set."""
+
+    def __new__(mcls, name: str, bases: tuple[type, ...], namespace: dict[str, Any], **kwargs: Any) -> type:
+        module = namespace.get("__module__")
+        annotations = namespace.get("__annotations__", {})
+        relations: dict[str, Any] = {}
+        for field, annotation in list(annotations.items()):
+            if not _is_relation_annotation(annotation, module):
+                continue
+            relations[field] = annotation
+            del annotations[field]
+            if not isinstance(namespace.get(field), Relation):
+                namespace[field] = Relation()
+        cls = super().__new__(mcls, name, bases, namespace, **kwargs)
+        if relations:
+            cls.__relation_namespace__ = _defining_namespace()  # type: ignore[attr-defined]
+        inherited: dict[str, Any] = {}
+        for base in reversed(cls.__mro__[1:]):
+            inherited.update(getattr(base, "__relation_annotations__", {}))
+        cls.__relation_annotations__ = {**inherited, **relations}  # type: ignore[attr-defined]
+        return cls
+
+
+class Model(BaseModel, metaclass=ModelMeta):
     """Base class for all ForgeDB models."""
+
+    model_config = ConfigDict(ignored_types=(Relation,))
 
     __abstract__: ClassVar[bool] = True
     __bound_db__: ClassVar[Database | None] = None
+    __relation_annotations__: ClassVar[dict[str, Any]] = {}
+    __relation_namespace__: ClassVar[dict[str, Any]] = {}
     __schema__ = _SchemaDescriptor()
 
     # ------------------------------------------------------------ plumbing
 
     @classmethod
-    def bind(cls, database: Database) -> type[Model]:
+    def bind(cls, database: Database) -> type[Self]:
         cls.__bound_db__ = database
         return cls
 
@@ -58,7 +115,7 @@ class Model(BaseModel):
     # ------------------------------------------------------------- queries
 
     @classmethod
-    def filter(cls, *conditions: Condition | None, **kwargs: Any) -> Query:
+    def filter(cls, *conditions: Condition | None, **kwargs: Any) -> Query[Self]:
         return Query(cls).filter(*conditions, **kwargs)
 
     @classmethod
@@ -69,7 +126,7 @@ class Model(BaseModel):
         limit: int | None = None,
         offset: int | None = None,
         **kwargs: Any,
-    ) -> list[Model]:
+    ) -> list[Self]:
         if isinstance(order_by, (list, tuple)):
             order_fields = list(order_by)
         else:
@@ -77,7 +134,7 @@ class Model(BaseModel):
         return cls.filter(*conditions, **kwargs).order_by(*order_fields).limit(limit).offset(offset).all()
 
     @classmethod
-    def get(cls, *conditions: Condition | None, **kwargs: Any) -> Model | None:
+    def get(cls, *conditions: Condition | None, **kwargs: Any) -> Self | None:
         return cls.filter(*conditions, **kwargs).first()
 
     @classmethod
@@ -87,7 +144,7 @@ class Model(BaseModel):
         order_by: Any = (),
         offset: int | None = None,
         **kwargs: Any,
-    ) -> Model | None:
+    ) -> Self | None:
         if isinstance(order_by, (list, tuple)):
             order_fields = list(order_by)
         else:
@@ -105,7 +162,7 @@ class Model(BaseModel):
     # ------------------------------------------------------------- writing
 
     @classmethod
-    def create(cls, **data: Any) -> Model:
+    def create(cls, **data: Any) -> Self:
         db = cls._db()
         db.ensure_schema(cls)
         schema = cls.__schema__
@@ -134,10 +191,13 @@ class Model(BaseModel):
         pk_value = raw[pk]
         if pk_value is None and pk_column is not None and pk_column.autoincrement:
             pk_value = db.last_insert_rowid()
-        return cls.get(**{pk: pk_value})
+        created = cls.get(**{pk: pk_value})
+        if created is None:
+            raise ForgeDBError(f"{cls.__name__} row disappeared right after insert")
+        return created
 
     @classmethod
-    def update(cls, pk_value: Any = _NOARG, **kwargs: Any) -> Model | None:
+    def update(cls, pk_value: Any = _NOARG, **kwargs: Any) -> Self | None:
         schema = cls.__schema__
         if schema.pk is None:
             raise MissingPrimaryKeyError(f"{cls.__name__} has no primary key")
@@ -172,7 +232,7 @@ class Model(BaseModel):
 
     # --------------------------------------------------- instance operations
 
-    def save(self) -> Model:
+    def save(self) -> Self:
         cls = type(self)
         cls._db().ensure_schema(cls)
         schema = cls.__schema__
@@ -189,7 +249,7 @@ class Model(BaseModel):
             raw.pop(pk, None)
         return cls.create(**raw)
 
-    def refresh(self) -> Model | None:
+    def refresh(self) -> Self | None:
         cls = type(self)
         schema = cls.__schema__
         if schema.pk is None:

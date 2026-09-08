@@ -18,9 +18,14 @@ import sqlite3
 import types
 from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
-from typing import Any, Self
+from typing import TYPE_CHECKING, Any
 
 from .templating import render
+
+if TYPE_CHECKING:
+    from typing import Self
+
+    from .model import Model
 
 
 class Database:
@@ -41,13 +46,15 @@ class Database:
         self.busy_timeout_ms = busy_timeout_ms
         self.check_same_thread = check_same_thread
         self._connection: sqlite3.Connection | None = None
-        self._created: set[type] = set()
+        self._created: set[type[Model]] = set()
+        self._creating: set[type[Model]] = set()
         self._tx_depth = 0
 
     @property
     def connection(self) -> sqlite3.Connection:
         if self._connection is None:
             self._connect()
+        assert self._connection is not None
         return self._connection
 
     def _connect(self) -> None:
@@ -129,12 +136,26 @@ class Database:
 
     # ------------------------------------------------------------------ DDL
 
-    def ensure_schema(self, model: type) -> None:
-        """Create the table and indexes for a model if not done for this database."""
-        if model in self._created:
+    def ensure_schema(self, model: type[Model]) -> None:
+        """Create the table and indexes for a model if not done for this database.
+
+        Referenced tables are created first so foreign keys always resolve.
+        """
+        if model in self._created or model in self._creating:
             return
         schema = model.__schema__
-        ddl = render("create_table.sql.j2", table=schema.table, columns=schema.columns)
+        self._creating.add(model)
+        try:
+            for fk in schema.foreign_keys:
+                self.ensure_schema(fk.target)
+        finally:
+            self._creating.discard(model)
+        ddl = render(
+            "create_table.sql.j2",
+            table=schema.table,
+            columns=schema.columns,
+            foreign_keys=schema.foreign_keys,
+        )
         self.execute(ddl)
         for index in schema.indexes:
             self.execute(
@@ -147,17 +168,17 @@ class Database:
             )
         self._created.add(model)
 
-    def create_tables(self, *models: type) -> None:
+    def create_tables(self, *models: type[Model]) -> None:
         for model in models:
             self.ensure_schema(model)
 
-    def drop_tables(self, *models: type) -> None:
+    def drop_tables(self, *models: type[Model]) -> None:
         for model in models:
             schema = model.__schema__
             self.execute(f'DROP TABLE IF EXISTS "{schema.table}"')
             self._created.discard(model)
 
-    def table_exists(self, model: type) -> bool:
+    def table_exists(self, model: type[Model]) -> bool:
         schema = model.__schema__
         row = self.execute(
             "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ? ORDER BY 1",

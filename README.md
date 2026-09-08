@@ -27,11 +27,12 @@ with every value bound as a parameter.
 pip install -e ".[dev]"
 ```
 
-Run the test suite and linter:
+Run the test suite, linter and type checker:
 
 ```bash
 python -m pytest -q
 ruff check forgedb tests
+mypy
 ```
 
 ## Quickstart
@@ -124,6 +125,81 @@ class User(Model):
 
 Supported extras: `unique: bool`, `index: bool`, `check: "SQL expression"`.
 
+### Foreign keys
+
+`ForeignKey(...)` declares a real SQLite foreign key on a column. It returns a
+Pydantic field, so the model class stays the single source of truth for columns,
+primary key, indexes and constraints:
+
+```python
+from forgedb import ForeignKey, Model
+
+class User(Model):
+    id: int | None = None
+    name: str
+
+class Post(Model):
+    id: int | None = None
+    title: str
+    author_id: int = ForeignKey(User, on_delete="CASCADE", on_update="CASCADE")
+```
+
+```sql
+CREATE TABLE IF NOT EXISTS "post" (
+    "id" INTEGER PRIMARY KEY AUTOINCREMENT DEFAULT NULL,
+    "title" TEXT NOT NULL,
+    "author_id" INTEGER NOT NULL,
+    FOREIGN KEY ("author_id") REFERENCES "user" ("id") ON DELETE CASCADE ON UPDATE CASCADE
+);
+```
+
+| Argument | Meaning |
+|---|---|
+| `target` | referenced model class, or `"self"` for a self reference |
+| `column` | referenced column (default: the target's primary key) |
+| `on_delete`, `on_update` | `CASCADE`, `SET NULL`, `SET DEFAULT`, `RESTRICT`, `NO ACTION` |
+| `default`, other `Field(...)` kwargs | forwarded to Pydantic |
+
+A nullable foreign key is an optional annotation with a default:
+
+```python
+class Comment(Model):
+    id: int | None = None
+    author_id: int | None = ForeignKey(User, on_delete="SET NULL", default=None)
+```
+
+Constraints are enforced by SQLite itself: every connection runs
+`PRAGMA foreign_keys = ON` (disable with `Database(..., foreign_keys=False)`), a
+dangling reference raises `sqlite3.IntegrityError`, and referenced tables are
+created before the tables that point at them.
+
+### Relationships
+
+`Relation[...]` declares a typed accessor for related rows. It is not a column:
+relations are excluded from the Pydantic field set and resolved through the
+foreign key metadata above.
+
+```python
+from forgedb import ForeignKey, Model, Relation, relation
+
+class User(Model):
+    id: int | None = None
+    posts: Relation[list["Post"]] = relation()
+
+class Post(Model):
+    id: int | None = None
+    author_id: int = ForeignKey(User, on_delete="CASCADE")
+    author: Relation[User] = relation()
+
+post.author()     # User   (None when the foreign key is NULL)
+user.posts()      # list[Post]
+```
+
+Each call runs one query; there is no lazy-loading cache yet. The foreign key
+column is inferred from the schema and can be pinned with
+`relation(field="reviewer_id")` when a model has several foreign keys to the
+same target.
+
 ### Primary keys
 
 | Declaration | Behaviour |
@@ -197,6 +273,17 @@ SQLite scalar functions.
 
 `Model.filter(...)` starts a chainable `Query`; steps build up conditions,
 ordering and pagination, then a terminal method executes it.
+
+Every model API preserves the concrete model type, so no cast is needed:
+
+```python
+posts: list[Post] = Post.filter(author_id=user.id).all()   # list[Post]
+post: Post | None = Post.get(id=1)                         # Post | None
+```
+
+`Query` is generic (`Query[Post]`) and the `Model` classmethods are typed with
+`Self`; `mypy`/`pyright` infer `list[Post]` and `Post | None` from
+`Post.filter().all()` and `Post.filter().first()`. See `tests/typing/typed_api.py`.
 
 ```python
 # building
@@ -326,7 +413,7 @@ Writing operations create the model's table on demand.
 - **core:** transactions with savepoint nesting, WAL journal mode, JSON1
   (`json`/`json_extract`), parameter binding for every statement, custom SQL
   function registration, indexes, UNIQUE/CHECK constraints, rowid integer
-  primary keys.
+  primary keys, foreign keys with `ON DELETE`/`ON UPDATE` actions.
 - **future:** FTS5 full-text search, views, virtual tables, UPSERT, migrations,
   connection pooling / multi-threaded access.
 - **out of scope (later ForgeDB phases):** RocksDB, MinIO, embeddings, FAISS/HNSW,
@@ -340,8 +427,9 @@ forgedb/
   orm/
     model.py             # Model base class, CRUD, instance save()/refresh()
     database.py          # Database, connections, transactions, DDL
-    query.py             # chainable query builder
-    schema.py            # pydantic -> TableSchema mapping (types, pk, constraints)
+    query.py             # chainable query builder, generic in the model
+    relations.py         # Relation[...] typed relationship accessors
+    schema.py            # pydantic -> TableSchema mapping (types, pk, constraints, FKs)
     conditions.py        # filter DSL: and_/or_/>>> operators, rendering
     values.py            # python <-> SQLite serialization (JSON, ISO dates, ...)
     templating.py        # Jinja2 environment over templates/*.sql.j2
