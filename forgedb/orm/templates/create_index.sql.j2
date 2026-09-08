@@ -1,0 +1,1 @@
+CREATE {% if index.unique %}UNIQUE {% endif %}INDEX {% if not exists %}IF NOT EXISTS {% endif %}"{{ index_name }}" ON "{{ table }}" ({% for col in index.columns %}"{{ col }}"{% if not loop.last %}, {% endif %}{% endfor %});

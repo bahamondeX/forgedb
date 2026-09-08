@@ -1,0 +1,3 @@
+SELECT COUNT(*) FROM "{{ table }}"
+{% if where %}WHERE {{ where }}
+{% endif %};

@@ -1,0 +1,7 @@
+SELECT {% if distinct %}DISTINCT {% endif %}{% if columns %}{% for c in columns %}"{{ c }}"{% if not loop.last %}, {% endif %}{% endfor %}{% else %}*{% endif %}
+FROM "{{ table }}"
+{% if where %}WHERE {{ where }}
+{% endif %}{% if order_by %}ORDER BY {{ order_by }}
+{% endif %}{% if limit is not none %}LIMIT {{ limit }}
+{% endif %}{% if offset is not none %}OFFSET {{ offset }}
+{% endif %};

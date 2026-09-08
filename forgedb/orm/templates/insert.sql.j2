@@ -1,0 +1,2 @@
+INSERT INTO "{{ table }}" ({% for col in columns %}"{{ col }}"{% if not loop.last %}, {% endif %}{% endfor %})
+VALUES ({% for col in columns %}?{% if not loop.last %}, {% endif %}{% endfor %});

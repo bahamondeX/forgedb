@@ -1,0 +1,4 @@
+UPDATE "{{ table }}"
+SET {% for col in set_columns %}"{{ col }}" = :set_{{ col }}{% if not loop.last %}, {% endif %}{% endfor %}
+{% if where %}WHERE {{ where }}
+{% endif %};
