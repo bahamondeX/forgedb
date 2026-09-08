@@ -13,7 +13,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
+dev = ["pytest>=8", "mypy>=1.8"]
 
 [tool.setuptools.packages.find]
 include = ["forgedb*"]
@@ -24,3 +24,8 @@ include = ["forgedb*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+
+[tool.mypy]
+python_version = "3.11"
+files = ["forgedb", "tests/typing"]
+plugins = ["pydantic.mypy"]
