@@ -5,6 +5,7 @@ from __future__ import annotations
 import sqlite3
 
 import pytest
+from pydantic import Field
 
 from forgedb import Database, ForeignKey, Model, SchemaError, set_default_database
 from forgedb.orm.schema import schema_for
@@ -129,4 +130,44 @@ def test_foreign_key_to_a_non_model_is_rejected() -> None:
         other_id: int = ForeignKey(int)
 
     with pytest.raises(SchemaError):
+        schema_for(Broken)
+
+
+def test_foreign_key_to_an_unknown_column_is_rejected() -> None:
+    class Broken(Model):
+        id: int | None = None
+        user_email: str = ForeignKey(User, column="email")
+
+    with pytest.raises(SchemaError, match="unknown column"):
+        schema_for(Broken)
+
+
+def test_foreign_key_to_a_non_unique_column_is_rejected() -> None:
+    class Broken(Model):
+        id: int | None = None
+        user_name: str = ForeignKey(User, column="name")
+
+    with pytest.raises(SchemaError, match="neither the primary key nor a unique column"):
+        schema_for(Broken)
+
+
+def test_foreign_key_to_a_unique_column_is_allowed() -> None:
+    class Account(Model):
+        id: int | None = None
+        email: str = Field(default="", json_schema_extra={"unique": True})
+
+    class Session(Model):
+        id: int | None = None
+        account_email: str = ForeignKey(Account, column="email")
+
+    (fk,) = schema_for(Session).foreign_keys
+    assert (fk.target_table, fk.target_column) == ("account", "email")
+
+
+def test_set_null_on_a_not_null_column_is_rejected() -> None:
+    class Broken(Model):
+        id: int | None = None
+        author_id: int = ForeignKey(User, on_delete="SET NULL")
+
+    with pytest.raises(SchemaError, match="SET NULL"):
         schema_for(Broken)

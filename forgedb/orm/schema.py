@@ -276,14 +276,44 @@ def foreign_key_spec(field_info: FieldInfo) -> ForeignKeySpec | None:
     return None
 
 
-def _resolve_foreign_key(name: str, spec: ForeignKeySpec, model: type[BaseModel]) -> ForeignKeyConstraint:
+def _is_unique_column(model: type[BaseModel], column: str) -> bool:
+    """Whether a column can be a foreign key parent key in SQLite.
+
+    SQLite requires the parent key to be the primary key or a uniquely
+    indexed column.
+    """
+    if _field_extra(model.model_fields[column]).get("unique"):
+        return True
+    for entry in getattr(model, "__indexes__", ()):
+        if isinstance(entry, Index) and entry.unique and entry.columns == (column,):
+            return True
+        if isinstance(entry, dict) and entry.get("unique") and tuple(entry["fields"]) == (column,):
+            return True
+    return False
+
+
+def _resolve_foreign_key(
+    name: str,
+    spec: ForeignKeySpec,
+    model: type[BaseModel],
+    *,
+    not_null: bool,
+) -> ForeignKeyConstraint:
     model_name = model.__name__
     target = model if spec.target == "self" else spec.target
     if not (isinstance(target, type) and issubclass(target, BaseModel)):
         raise SchemaError(f"foreign key {model_name}.{name} must target a model class, got {target!r}")
-    target_column = spec.column or pk_name_for(target)
+    target_pk = pk_name_for(target)
+    target_column = spec.column or target_pk
     if target_column not in target.model_fields:
         raise SchemaError(f"foreign key {model_name}.{name} references unknown column {target_column!r}")
+    if target_column != target_pk and not _is_unique_column(target, target_column):
+        raise SchemaError(
+            f"foreign key {model_name}.{name} references {target.__name__}.{target_column!r}, "
+            "which is neither the primary key nor a unique column"
+        )
+    if not_null and "SET NULL" in (spec.on_delete, spec.on_update):
+        raise SchemaError(f"foreign key {model_name}.{name} cannot use SET NULL on a NOT NULL column")
     return ForeignKeyConstraint(
         column=name,
         target=target,
@@ -329,7 +359,7 @@ def build_schema(model: type[BaseModel]) -> TableSchema:
         required = field_info.is_required()
         not_null = required and not is_pk and not is_optional(annotation)
         spec = foreign_key_spec(field_info)
-        foreign_key = _resolve_foreign_key(name, spec, model) if spec is not None else None
+        foreign_key = _resolve_foreign_key(name, spec, model, not_null=not_null) if spec is not None else None
 
         default = None
         if not _is_undefined(field_info.default):
